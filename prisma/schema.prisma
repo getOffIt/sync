@@ -1,0 +1,49 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Mapping {
+  id            String   @id @default(cuid())
+  uid           String   @unique
+  googleEventId String
+  fingerprint   String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([uid])
+}
+
+model Token {
+  id           Int      @id @default(1)
+  accessToken  String
+  refreshToken String
+  expiryDate   DateTime
+  scopes       String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model SyncLog {
+  id         Int      @id @default(autoincrement())
+  startedAt  DateTime @default(now())
+  finishedAt DateTime?
+  status     String  // SUCCESS, ERROR, or PARTIAL
+  summary    String
+  created    Int      @default(0)
+  updated    Int      @default(0)
+  deleted    Int      @default(0)
+  errors     String?  // JSON string of array of strings or objects
+  createdAt  DateTime @default(now())
+
+  @@index([startedAt])
+}
+
+
