@@ -15,10 +15,15 @@ model Mapping {
   uid           String   @unique
   googleEventId String
   fingerprint   String
+  // New fields for recurring exceptions
+  isException   Boolean  @default(false)
+  originalUid   String?  // Links to the master recurring event
+  exceptionDate DateTime? // When this exception occurs
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   @@index([uid])
+  @@index([originalUid])
 }
 
 model Token {

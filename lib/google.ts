@@ -96,6 +96,15 @@ export function createGoogleEventBody(vevent: any) {
     transparency: vevent.transparency === 'TRANSPARENT' ? 'transparent' : 'opaque'
   }
   
+  // Check if this is a recurring event exception
+  if (vevent['recurrence-id']) {
+    // This is an exception to a recurring event
+    // We'll need to set the recurringEventId when creating the event
+    console.log(`📅 Creating exception event: ${vevent.summary}`)
+    console.log(`   Original date: ${vevent['recurrence-id']}`)
+    console.log(`   New date: ${vevent.start}`)
+  }
+  
   // Helper function to format date in local timezone
   function formatLocalDateTime(date: Date): string {
     const year = date.getFullYear()
