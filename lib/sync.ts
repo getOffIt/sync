@@ -253,7 +253,7 @@ export async function syncOnce(): Promise<SyncResult> {
 }
 
 // Enhanced function to fetch and parse ICS with recurring event detection
-export async function fetchAndParseICSWithRecurrence(icsUrl: string, options: ICSFilterOptions = {}): Promise<{
+export async function fetchAndParseICSWithRecurrence(icsUrl: string, options: ICSFilterOptions = {}, includeFiltered = false): Promise<{
   parsedEvents: ParsedEvent[],
   recurringEvents: RecurringParsedEvent[]
 }> {
@@ -275,8 +275,8 @@ export async function fetchAndParseICSWithRecurrence(icsUrl: string, options: IC
     if (event && typeof event === 'object' && 'type' in event && event.type === 'VEVENT') {
       const vevent = event as any
       
-      // Apply filters
-      if (shouldSkipEvent(vevent, options)) {
+      // Apply filters (unless includeFiltered is true)
+      if (!includeFiltered && shouldSkipEvent(vevent, options)) {
         continue
       }
       
