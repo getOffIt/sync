@@ -1,111 +1,110 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/db'
 import { getAuthenticatedCalendar } from '@/lib/google'
+import { fetchAndParseICSWithRecurrence } from '@/lib/sync'
+import { shouldSkipEvent } from '@/lib/ics'
 import { googleCalendarRateLimiter } from '@/lib/rate-limiter'
 
 export async function POST() {
   try {
+    const icsUrl = process.env.ICS_URL
+    if (!icsUrl) {
+      throw new Error('ICS_URL not configured')
+    }
+
+    // Get all mappings
+    const mappings = await prisma.mapping.findMany()
+    
+    // Fetch current ICS data (including filtered events)
+    const { parsedEvents, recurringEvents } = await fetchAndParseICSWithRecurrence(icsUrl, { 
+      myEmail: process.env.MY_EMAIL 
+    }, true) // Pass true to include filtered events
+
+    // Create a map of all events from ICS (including filtered ones)
+    const allICSEvents = new Map()
+    
+    // Add individual events
+    for (const event of parsedEvents) {
+      allICSEvents.set(event.uid, event.vevent)
+    }
+    
+    // Add recurring events
+    for (const event of recurringEvents) {
+      allICSEvents.set(event.uid, event.vevent)
+    }
+
     const calendar = await getAuthenticatedCalendar()
-    const calendarId = process.env.GOOGLE_CALENDAR_ID!
-
-    // Get all events from Google Calendar
-    const response = await googleCalendarRateLimiter.executeWithRetry(
-      () => calendar.events.list({
-        calendarId,
-        timeMin: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString(), // 90 days ago
-        timeMax: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString(), // 180 days from now
-        singleEvents: true,
-        orderBy: 'startTime'
-      }),
-      'list events for cleanup'
-    )
-
-    const events = response.data.items || []
-    console.log(`Found ${events.length} events in Google Calendar`)
-
-    // Group events by title and start time to find duplicates
-    const eventGroups = new Map<string, any[]>()
-    
-    for (const event of events) {
-      if (event.summary && event.start?.dateTime) {
-        // Create a key based on title and start time (within 1 minute)
-        const startTime = new Date(event.start.dateTime)
-        const key = `${event.summary}_${startTime.getFullYear()}-${startTime.getMonth()}-${startTime.getDate()}-${startTime.getHours()}-${startTime.getMinutes()}`
-        
-        if (!eventGroups.has(key)) {
-          eventGroups.set(key, [])
-        }
-        eventGroups.get(key)!.push(event)
-      }
-    }
-
-    // Find groups with duplicates
-    const duplicates = []
-    const toDelete = []
-    
-    for (const [key, group] of eventGroups.entries()) {
-      if (group.length > 1) {
-        duplicates.push({
-          key,
-          count: group.length,
-          events: group
-        })
-        
-        // Keep the first event, delete the rest
-        for (let i = 1; i < group.length; i++) {
-          toDelete.push(group[i])
-        }
-      }
-    }
-
-    console.log(`Found ${duplicates.length} groups with duplicates`)
-    console.log(`Will delete ${toDelete.length} duplicate events`)
-
-    // Delete duplicate events
     let deletedCount = 0
-    for (const event of toDelete) {
-      try {
-        await googleCalendarRateLimiter.executeWithRetry(
-          () => calendar.events.delete({
-            calendarId,
-            eventId: event.id!
-          }),
-          `delete duplicate event ${event.id}`
-        )
-        deletedCount++
-        
-        // Also remove from database if it exists
-        await prisma.mapping.deleteMany({
-          where: {
-            googleEventId: event.id
+    const errors: string[] = []
+
+    // Check each mapping
+    for (const mapping of mappings) {
+      const icsEvent = allICSEvents.get(mapping.uid)
+      
+      if (icsEvent) {
+        // Event exists in ICS, check if it should be filtered out
+        if (shouldSkipEvent(icsEvent, { myEmail: process.env.MY_EMAIL })) {
+          try {
+            // Delete from Google Calendar
+            await googleCalendarRateLimiter.executeWithRetry(
+              () => calendar.events.delete({
+                calendarId: process.env.GOOGLE_CALENDAR_ID!,
+                eventId: mapping.googleEventId
+              }),
+              `cleanup delete event ${mapping.uid}`
+            )
+            
+            // Remove from database
+            await prisma.mapping.delete({
+              where: { uid: mapping.uid }
+            })
+            
+            deletedCount++
+            console.log(`Deleted filtered event: ${mapping.uid}`)
+            
+          } catch (error) {
+            const errorMessage = `Error deleting filtered event ${mapping.uid}: ${error instanceof Error ? error.message : 'Unknown error'}`
+            console.error(errorMessage)
+            errors.push(errorMessage)
           }
-        })
-        
-      } catch (error) {
-        console.error(`Error deleting duplicate event ${event.id}:`, error)
+        }
+      } else {
+        // Event no longer exists in ICS, delete it
+        try {
+          await googleCalendarRateLimiter.executeWithRetry(
+            () => calendar.events.delete({
+              calendarId: process.env.GOOGLE_CALENDAR_ID!,
+              eventId: mapping.googleEventId
+            }),
+            `cleanup delete missing event ${mapping.uid}`
+          )
+          
+          await prisma.mapping.delete({
+            where: { uid: mapping.uid }
+          })
+          
+          deletedCount++
+          console.log(`Deleted missing event: ${mapping.uid}`)
+          
+        } catch (error) {
+          const errorMessage = `Error deleting missing event ${mapping.uid}: ${error instanceof Error ? error.message : 'Unknown error'}`
+          console.error(errorMessage)
+          errors.push(errorMessage)
+        }
       }
     }
 
     return NextResponse.json({
       success: true,
       data: {
-        totalEvents: events.length,
-        duplicateGroups: duplicates.length,
-        duplicatesDeleted: deletedCount,
-        duplicateGroups: duplicates.map(d => ({
-          title: d.key.split('_')[0],
-          count: d.count,
-          events: d.events.map(e => ({
-            id: e.id,
-            start: e.start?.dateTime,
-            summary: e.summary
-          }))
-        }))
+        deletedCount,
+        errors: errors.length > 0 ? errors : null,
+        message: `Cleanup completed. Deleted ${deletedCount} events.`
       }
     })
 
   } catch (error) {
-    console.error('Cleanup API error:', error)
+    console.error('Cleanup error:', error)
     
     return NextResponse.json(
       {

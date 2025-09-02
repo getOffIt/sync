@@ -1,77 +1,113 @@
 import { NextResponse } from 'next/server'
-import { fetchAndParseICS } from '@/lib/ics'
+import { prisma } from '@/lib/db'
+import { fetchAndParseICSWithRecurrence } from '@/lib/sync'
+import { shouldSkipEvent } from '@/lib/ics'
 
 export async function GET() {
   try {
+    // Get all mappings
+    const mappings = await prisma.mapping.findMany({
+      orderBy: { uid: 'asc' }
+    })
+
+    // Get recent sync logs
+    const recentSyncs = await prisma.syncLog.findMany({
+      take: 5,
+      orderBy: { startedAt: 'desc' }
+    })
+
+    // Fetch current ICS data to see what's being processed
     const icsUrl = process.env.ICS_URL
-    const myEmail = process.env.MY_EMAIL
-
     if (!icsUrl) {
-      return NextResponse.json({ success: false, error: 'ICS_URL not configured' })
+      throw new Error('ICS_URL not configured')
     }
 
-    // Use the proper parsing function that expands recurring events
-    const parsedEvents = await fetchAndParseICS(icsUrl, { myEmail })
-    
-    const today = new Date()
-    const todayStr = today.toDateString()
-    
-    const allEvents = []
+    // Get events with filtering (normal sync behavior)
+    const { parsedEvents, recurringEvents } = await fetchAndParseICSWithRecurrence(icsUrl, { 
+      myEmail: process.env.MY_EMAIL 
+    })
+
+    // Get ALL events including filtered ones
+    const { parsedEvents: allParsedEvents, recurringEvents: allRecurringEvents } = await fetchAndParseICSWithRecurrence(icsUrl, { 
+      myEmail: process.env.MY_EMAIL 
+    }, true)
+
+    // Get UIDs that are currently in the ICS feed (after filtering)
+    const currentUIDs = new Set([
+      ...parsedEvents.map(e => e.uid),
+      ...recurringEvents.map(e => e.uid)
+    ])
+
+    // Get ALL UIDs from ICS feed (including filtered)
+    const allUIDs = new Set([
+      ...allParsedEvents.map(e => e.uid),
+      ...allRecurringEvents.map(e => e.uid)
+    ])
+
+    // Check which mappings correspond to events that are no longer in the ICS feed
+    const orphanedMappings = mappings.filter(m => !allUIDs.has(m.uid))
+
+    // Check which mappings correspond to events that are filtered out
+    const filteredMappings = mappings.filter(m => allUIDs.has(m.uid) && !currentUIDs.has(m.uid))
+
+    // Get sample of filtered events to understand what's being filtered
     const filteredEvents = []
-    const todayEvents = []
-    
-    for (const parsedEvent of parsedEvents) {
-      const vevent = parsedEvent.vevent
-      
-      // Check if it's today
-      const eventDate = vevent.start ? new Date(vevent.start) : null
-      const isToday = eventDate && eventDate.toDateString() === todayStr
-      
-      const eventInfo = {
-        uid: parsedEvent.uid,
-        summary: vevent.summary,
-        start: vevent.start,
-        isToday,
-        transparency: vevent.transparency,
-        busyStatus: (vevent as any)['x-microsoft-cdo-busystatus'],
-        attendee: vevent.attendee
-      }
-      
-      allEvents.push(eventInfo)
-      
-      if (isToday) {
-        todayEvents.push(eventInfo)
-        
-        // Check if it would be filtered
-        const { shouldSkipEvent } = await import('@/lib/ics')
-        const wouldSkip = shouldSkipEvent(vevent, { myEmail, onlyToday: true })
-        
-        if (wouldSkip) {
-          filteredEvents.push({
-            ...eventInfo,
-            reason: 'Filtered out by shouldSkipEvent'
-          })
-        }
+    for (const event of [...allParsedEvents, ...allRecurringEvents]) {
+      if (!currentUIDs.has(event.uid)) {
+        const vevent = event.vevent
+        filteredEvents.push({
+          uid: event.uid,
+          summary: vevent.summary,
+          start: vevent.start,
+          busyStatus: (vevent as any)['x-microsoft-cdo-busystatus'],
+          attendee: vevent.attendee,
+          transparency: vevent.transparency
+        })
       }
     }
-    
+
     return NextResponse.json({
       success: true,
-      stats: {
-        totalEvents: allEvents.length,
-        todayEvents: todayEvents.length,
-        filteredEvents: filteredEvents.length,
-        wouldSync: todayEvents.length - filteredEvents.length
-      },
-      allEvents,
-      todayEvents,
-      filteredEvents
+      data: {
+        mappingsCount: mappings.length,
+        currentEventsCount: parsedEvents.length + recurringEvents.length,
+        allEventsCount: allParsedEvents.length + allRecurringEvents.length,
+        orphanedMappingsCount: orphanedMappings.length,
+        filteredMappingsCount: filteredMappings.length,
+        orphanedMappings: orphanedMappings.map(m => ({
+          uid: m.uid,
+          googleEventId: m.googleEventId,
+          fingerprint: m.fingerprint
+        })),
+        filteredMappings: filteredMappings.map(m => ({
+          uid: m.uid,
+          googleEventId: m.googleEventId,
+          fingerprint: m.fingerprint
+        })),
+        recentSyncs: recentSyncs.map(s => ({
+          id: s.id,
+          startedAt: s.startedAt.toISOString(),
+          status: s.status,
+          summary: s.summary,
+          created: s.created,
+          updated: s.updated,
+          deleted: s.deleted
+        })),
+        sampleCurrentEvents: [
+          ...parsedEvents.slice(0, 3).map(e => ({ uid: e.uid, type: 'individual' })),
+          ...recurringEvents.slice(0, 3).map(e => ({ uid: e.uid, type: 'recurring' }))
+        ],
+        sampleFilteredEvents: filteredEvents.slice(0, 5)
+      }
     })
-    
   } catch (error) {
-    console.error('Debug error:', error)
+    console.error('Debug API error:', error)
+    
     return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : 'Unknown error' },
+      {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      },
       { status: 500 }
     )
   }
