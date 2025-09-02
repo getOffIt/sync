@@ -225,6 +225,43 @@ npm run build
 4. Configure SSL certificates
 5. Set up cron job for automated syncs
 
+## Cleanup and Reset
+
+### Complete Cleanup Script
+
+When testing sync functionality or debugging issues, you may need to start with a clean slate. The app includes a comprehensive cleanup script that wipes both the local database and Google Calendar:
+
+```bash
+# Using npm script (recommended)
+npm run cleanup:all
+
+# Or run directly
+./scripts/cleanup-all.sh
+
+# For complete database schema reset
+npm run cleanup:all -- --reset-schema
+```
+
+**⚠️ WARNING: This will delete ALL data from both systems!**
+
+The cleanup script will:
+1. Delete all events from your Google Calendar
+2. Clear all data from your local database
+3. Optionally reset the database schema completely
+
+After cleanup, you'll need to:
+1. Run a fresh sync to populate both systems
+
+### Manual Cleanup
+
+```bash
+# Clean database only
+npm run cleanup
+
+# Reset database schema
+npx prisma db push --force-reset
+```
+
 ## Troubleshooting
 
 ### Common Issues
