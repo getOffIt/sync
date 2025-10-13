@@ -1,5 +1,10 @@
 #!/usr/bin/env tsx
 
+// Set default DATABASE_URL if not provided (following the pattern from README)
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = 'file:./prisma/dev.db'
+}
+
 import { prisma } from '../lib/db'
 import { getAuthenticatedCalendar } from '../lib/google'
 import { googleCalendarRateLimiter } from '../lib/rate-limiter'

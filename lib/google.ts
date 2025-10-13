@@ -105,6 +105,81 @@ export function createGoogleEventBody(vevent: any) {
     console.log(`   New date: ${vevent.start}`)
   }
   
+  // Helper function to detect all-day events with specific patterns for this ICS source
+  function isAllDayEvent(vevent: any): boolean {
+    // Check if the event has explicit all-day indicators
+    if (vevent.allDay === true || vevent['all-day'] === true) {
+      return true
+    }
+    
+    // Check if start and end times indicate an all-day event
+    if (vevent.start && vevent.end) {
+      const startDate = new Date(vevent.start)
+      const endDate = new Date(vevent.end)
+      
+      // Calculate duration in hours
+      const durationHours = (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60)
+      
+      // SPECIFIC PATTERN FOR THIS ICS SOURCE:
+      // All-day events appear as 23-hour events from 00:00 UTC to 23:00 UTC
+      // which becomes 01:00 BST to 00:00 BST (next day) in local time
+      
+      // Check if both start and end are at midnight in UTC (the source pattern)
+      const startAtMidnightUTC = startDate.getUTCHours() === 0 && 
+                                startDate.getUTCMinutes() === 0 && 
+                                startDate.getUTCSeconds() === 0 &&
+                                startDate.getUTCMilliseconds() === 0
+      
+      const endAt23UTC = endDate.getUTCHours() === 23 && 
+                         endDate.getUTCMinutes() === 0 && 
+                         endDate.getUTCSeconds() === 0 &&
+                         endDate.getUTCMilliseconds() === 0
+      
+      // Primary detection: 23-hour duration from 00:00 UTC to 23:00 UTC
+      if (durationHours === 23 && startAtMidnightUTC && endAt23UTC) {
+        return true
+      }
+      
+      // Secondary detection: 23-hour duration starting at midnight (any timezone)
+      const startAtMidnight = startDate.getHours() === 0 && 
+                             startDate.getMinutes() === 0 && 
+                             startDate.getSeconds() === 0 &&
+                             startDate.getMilliseconds() === 0
+      
+      if (durationHours === 23 && startAtMidnight) {
+        return true
+      }
+      
+      // Standard 24-hour all-day events
+      const isFullDays = durationHours > 0 && durationHours % 24 === 0
+      const endAtMidnightUTC = endDate.getUTCHours() === 0 && 
+                              endDate.getUTCMinutes() === 0 && 
+                              endDate.getUTCSeconds() === 0 &&
+                              endDate.getUTCMilliseconds() === 0
+      
+      const endAtMidnight = endDate.getHours() === 0 && 
+                           endDate.getMinutes() === 0 && 
+                           endDate.getSeconds() === 0 &&
+                           endDate.getMilliseconds() === 0
+      
+      if (isFullDays && (startAtMidnight && endAtMidnight || startAtMidnightUTC && endAtMidnightUTC)) {
+        return true
+      }
+      
+      // Additional pattern: Events with "office day" in the title and 23-hour duration
+      if (vevent.summary && vevent.summary.toLowerCase().includes('office day') && durationHours === 23) {
+        return true
+      }
+      
+      // Additional pattern: Events with "away day" in the title and full-day duration
+      if (vevent.summary && vevent.summary.toLowerCase().includes('away day') && durationHours >= 23) {
+        return true
+      }
+    }
+    
+    return false
+  }
+
   // Helper function to format date in local timezone
   function formatLocalDateTime(date: Date): string {
     const year = date.getFullYear()
@@ -124,37 +199,18 @@ export function createGoogleEventBody(vevent: any) {
     return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${offsetStr}`
   }
   
+  // Handle start and end time with improved all-day detection
+  const isAllDay = isAllDayEvent(vevent)
+  
   // Handle start time
   if (vevent.start) {
     if (vevent.start instanceof Date && !isNaN(vevent.start.getTime())) {
-      // Check if it's an all-day event (no time component)
-      const isAllDay = vevent.start.getHours() === 0 && 
-                      vevent.start.getMinutes() === 0 && 
-                      vevent.start.getSeconds() === 0 &&
-                      vevent.start.getMilliseconds() === 0
-      
       if (isAllDay) {
+        // For all-day events, use date format (YYYY-MM-DD)
         eventBody.start = { date: vevent.start.toISOString().split('T')[0] }
       } else {
-        // Check if this is a multi-day event that should be treated as all-day
-        const startDate = new Date(vevent.start)
-        const endDate = vevent.end ? new Date(vevent.end) : null
-        
-        if (endDate) {
-          const diffTime = endDate.getTime() - startDate.getTime()
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
-          
-          // If it's a multi-day event (2+ days), treat it as all-day
-          if (diffDays >= 2) {
-            eventBody.start = { date: startDate.toISOString().split('T')[0] }
-          } else {
-            // Use local time instead of UTC
-            eventBody.start = { dateTime: formatLocalDateTime(vevent.start) }
-          }
-        } else {
-          // Use local time instead of UTC
-          eventBody.start = { dateTime: formatLocalDateTime(vevent.start) }
-        }
+        // For timed events, use dateTime format with timezone
+        eventBody.start = { dateTime: formatLocalDateTime(vevent.start) }
       }
     }
   }
@@ -162,41 +218,16 @@ export function createGoogleEventBody(vevent: any) {
   // Handle end time
   if (vevent.end) {
     if (vevent.end instanceof Date && !isNaN(vevent.end.getTime())) {
-      const isAllDay = vevent.end.getHours() === 0 && 
-                      vevent.end.getMinutes() === 0 && 
-                      vevent.end.getSeconds() === 0 &&
-                      vevent.end.getMilliseconds() === 0
-      
       if (isAllDay) {
         // For all-day events, Google Calendar treats end date as exclusive
-        // So we need to add one day to the end date to get the correct duration
-        const adjustedEndDate = new Date(vevent.end)
-        adjustedEndDate.setDate(adjustedEndDate.getDate() + 1)
-        eventBody.end = { date: adjustedEndDate.toISOString().split('T')[0] }
-      } else {
-        // Check if this is a multi-day event that should be treated as all-day
-        const startDate = vevent.start ? new Date(vevent.start) : null
+        // For a 1-day event, if start is 2025-10-14, end should be 2025-10-15
+        // But our ICS source gives us the actual end date, so we need to add 1 day
         const endDate = new Date(vevent.end)
-        
-        if (startDate && endDate) {
-          const diffTime = endDate.getTime() - startDate.getTime()
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
-          
-          // If it's a multi-day event (2+ days), treat it as all-day
-          if (diffDays >= 2) {
-            // For all-day events, Google Calendar treats end date as exclusive
-            // So we need to add one day to the end date to get the correct duration
-            const adjustedEndDate = new Date(endDate)
-            adjustedEndDate.setDate(adjustedEndDate.getDate() + 1)
-            eventBody.end = { date: adjustedEndDate.toISOString().split('T')[0] }
-          } else {
-            // Use local time instead of UTC
-            eventBody.end = { dateTime: formatLocalDateTime(vevent.end) }
-          }
-        } else {
-          // Use local time instead of UTC
-          eventBody.end = { dateTime: formatLocalDateTime(vevent.end) }
-        }
+        endDate.setDate(endDate.getDate() + 1)
+        eventBody.end = { date: endDate.toISOString().split('T')[0] }
+      } else {
+        // For timed events, use dateTime format with timezone
+        eventBody.end = { dateTime: formatLocalDateTime(vevent.end) }
       }
     }
   }
@@ -214,18 +245,77 @@ export function createGoogleRecurringEventBody(vevent: any, rrule: string) {
     eventBody.recurrence = [googleRecurrence]
   }
   
-  // Handle timezone information from RRULE
-  const timezoneMatch = rrule.match(/TZID=([^:\n]+)/)
+  // Handle timezone information from RRULE or DTSTART
+  let timezone: string | null = null
+  
+  // First try to extract timezone from RRULE
+  const timezoneMatch = rrule.match(/TZID=([^:\n;]+)/)
   if (timezoneMatch) {
-    const timezone = timezoneMatch[1]
-    // Set the timezone for the event
-    eventBody.start.timeZone = timezone
-    if (eventBody.end) {
+    timezone = timezoneMatch[1].trim()
+  }
+  
+  // If no timezone in RRULE, try to extract from DTSTART
+  if (!timezone) {
+    const dtstartMatch = rrule.match(/DTSTART;TZID=([^:;]+):/)
+    if (dtstartMatch) {
+      timezone = dtstartMatch[1].trim()
+    }
+  }
+  
+  // Normalize common timezone names to Google Calendar compatible format
+  if (timezone) {
+    timezone = normalizeTimezone(timezone)
+    
+    // Only add timezone to dateTime events, preserve all-day events as date format
+    if (eventBody.start && eventBody.start.dateTime && !eventBody.start.timeZone) {
+      eventBody.start.timeZone = timezone
+    }
+    
+    if (eventBody.end && eventBody.end.dateTime && !eventBody.end.timeZone) {
       eventBody.end.timeZone = timezone
+    }
+  } else {
+    // Fallback: use a default timezone if none is found, but only for timed events
+    const fallbackTimezone = 'Europe/London' // or process.env.DEFAULT_TIMEZONE
+    
+    // Only add timezone to dateTime events, preserve all-day events
+    if (eventBody.start && eventBody.start.dateTime && !eventBody.start.timeZone) {
+      console.warn(`⚠️  No timezone found in RRULE for timed event, using fallback: ${fallbackTimezone}`)
+      eventBody.start.timeZone = fallbackTimezone
+    }
+    
+    if (eventBody.end && eventBody.end.dateTime && !eventBody.end.timeZone) {
+      eventBody.end.timeZone = fallbackTimezone
     }
   }
   
   return eventBody
+}
+
+// Helper function to normalize timezone names to Google Calendar compatible format
+function normalizeTimezone(timezone: string): string {
+  // Common timezone mappings from ICS to Google Calendar format
+  const timezoneMap: { [key: string]: string } = {
+    'GMT Standard Time': 'Europe/London',
+    'GMT Daylight Time': 'Europe/London',
+    'GMT': 'Europe/London',
+    'UTC': 'UTC',
+    'Eastern Standard Time': 'America/New_York',
+    'Eastern Daylight Time': 'America/New_York',
+    'Central Standard Time': 'America/Chicago',
+    'Central Daylight Time': 'America/Chicago',
+    'Mountain Standard Time': 'America/Denver',
+    'Mountain Daylight Time': 'America/Denver',
+    'Pacific Standard Time': 'America/Los_Angeles',
+    'Pacific Daylight Time': 'America/Los_Angeles',
+    'Central European Time': 'Europe/Paris',
+    'Central European Summer Time': 'Europe/Paris',
+    'CET': 'Europe/Paris',
+    'CEST': 'Europe/Paris'
+  }
+  
+  // Return mapped timezone or original if no mapping found
+  return timezoneMap[timezone] || timezone
 }
 
 // Helper function to convert ICS RRULE to Google Calendar recurrence format
@@ -234,15 +324,27 @@ export function convertRRULEToGoogleRecurrence(rrule: string): string | null {
   const freqMatch = rrule.match(/FREQ=([A-Z]+)/)
   const intervalMatch = rrule.match(/INTERVAL=(\d+)/)
   const bydayMatch = rrule.match(/BYDAY=([A-Z,]+)/)
-  const untilMatch = rrule.match(/UNTIL=(\d{8}T\d{6})/)
-  const timezoneMatch = rrule.match(/TZID=([^:\n]+)/)
-  const dtstartMatch = rrule.match(/DTSTART;TZID=[^:]+:(\d{8}T\d{6})/)
+  const untilMatch = rrule.match(/UNTIL=(\d{8}T\d{6}Z?)/)
+  const timezoneMatch = rrule.match(/TZID=([^:\n;]+)/)
+  const dtstartMatch = rrule.match(/DTSTART;TZID=([^:;]+):(\d{8}T\d{6})/)
   
   if (!freqMatch) return null
   
   const freq = freqMatch[1]
   const interval = intervalMatch ? parseInt(intervalMatch[1]) : 1
-  const timezone = timezoneMatch ? timezoneMatch[1] : 'UTC'
+  let timezone = timezoneMatch ? timezoneMatch[1].trim() : null
+  
+  // If no timezone in RRULE, try to extract from DTSTART
+  if (!timezone && dtstartMatch) {
+    timezone = dtstartMatch[1].trim()
+  }
+  
+  // Normalize timezone
+  if (timezone) {
+    timezone = normalizeTimezone(timezone)
+  } else {
+    timezone = 'UTC' // fallback
+  }
   
   // Convert frequency to Google Calendar format
   let googleFreq: string
