@@ -159,6 +159,8 @@ export async function syncOnce(): Promise<SyncResult> {
                 fingerprint: enhancedFingerprint
               }
             })
+            // Update the map so exceptions can find this master in the same sync run
+            uidToGoogleId.set(uid, response.data.id)
           }
         }
 
@@ -211,10 +213,15 @@ export async function syncOnce(): Promise<SyncResult> {
           )
           updated++
 
-          // Update fingerprint in database
+          // Update fingerprint and exception metadata in database
           await prisma.mapping.update({
             where: { uid },
-            data: { fingerprint }
+            data: {
+              fingerprint,
+              isException: true,
+              originalUid,
+              exceptionDate: exception.exceptionDate
+            }
           })
         } else {
           // Create new exception event as a standalone event
