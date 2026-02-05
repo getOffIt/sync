@@ -85,8 +85,19 @@ export async function syncOnce(): Promise<SyncResult> {
           // Add EXDATE for all moved/cancelled instances
           if (relatedExceptions.length > 0) {
             const exdates = relatedExceptions.map(ex => {
-              const exdateStr = ex.exceptionDate.toISOString().replace(/[:-]/g, '').split('.')[0] + 'Z'
-              return `EXDATE:${exdateStr}`
+              // Format the exception date in the same timezone as the event (Europe/London)
+              // Google Calendar requires EXDATE to match the timezone of the RRULE
+              const date = new Date(ex.exceptionDate)
+              // Convert to Europe/London time
+              const londonDate = new Date(date.toLocaleString('en-US', { timeZone: 'Europe/London' }))
+              const year = londonDate.getFullYear()
+              const month = String(londonDate.getMonth() + 1).padStart(2, '0')
+              const day = String(londonDate.getDate()).padStart(2, '0')
+              const hours = String(londonDate.getHours()).padStart(2, '0')
+              const minutes = String(londonDate.getMinutes()).padStart(2, '0')
+              const seconds = String(londonDate.getSeconds()).padStart(2, '0')
+              const exdateStr = `${year}${month}${day}T${hours}${minutes}${seconds}`
+              return `EXDATE;TZID=Europe/London:${exdateStr}`
             })
             eventBody.recurrence = [...(eventBody.recurrence || []), ...exdates]
           }
@@ -113,8 +124,19 @@ export async function syncOnce(): Promise<SyncResult> {
           // Add EXDATE for all moved/cancelled instances
           if (relatedExceptions.length > 0) {
             const exdates = relatedExceptions.map(ex => {
-              const exdateStr = ex.exceptionDate.toISOString().replace(/[:-]/g, '').split('.')[0] + 'Z'
-              return `EXDATE:${exdateStr}`
+              // Format the exception date in the same timezone as the event (Europe/London)
+              // Google Calendar requires EXDATE to match the timezone of the RRULE
+              const date = new Date(ex.exceptionDate)
+              // Convert to Europe/London time
+              const londonDate = new Date(date.toLocaleString('en-US', { timeZone: 'Europe/London' }))
+              const year = londonDate.getFullYear()
+              const month = String(londonDate.getMonth() + 1).padStart(2, '0')
+              const day = String(londonDate.getDate()).padStart(2, '0')
+              const hours = String(londonDate.getHours()).padStart(2, '0')
+              const minutes = String(londonDate.getMinutes()).padStart(2, '0')
+              const seconds = String(londonDate.getSeconds()).padStart(2, '0')
+              const exdateStr = `${year}${month}${day}T${hours}${minutes}${seconds}`
+              return `EXDATE;TZID=Europe/London:${exdateStr}`
             })
             eventBody.recurrence = [...(eventBody.recurrence || []), ...exdates]
           }
@@ -174,9 +196,11 @@ export async function syncOnce(): Promise<SyncResult> {
             continue // No changes needed
           }
 
-          // Update existing exception event using Google Calendar's exception API
+          // Update existing exception event
+          // Note: We DON'T set recurringEventId or originalStartTime for standalone exception events
+          // Instead, the EXDATE in the master recurring event handles hiding the original instance
           const eventBody = createGoogleEventBody(vevent)
-          
+
           const response = await googleCalendarRateLimiter.executeWithRetry(
             () => calendar.events.update({
               calendarId: process.env.GOOGLE_CALENDAR_ID!,
@@ -193,18 +217,13 @@ export async function syncOnce(): Promise<SyncResult> {
             data: { fingerprint }
           })
         } else {
-          // Create new exception event using Google Calendar's exception API
+          // Create new exception event as a standalone event
+          // Note: We DON'T set recurringEventId or originalStartTime for standalone exception events
+          // Instead, the EXDATE in the master recurring event handles hiding the original instance
           const eventBody = createGoogleEventBody(vevent)
-          
-          // Set the original start time - this tells Google Calendar which instance to replace
-          eventBody.originalStartTime = {
-            dateTime: exception.exceptionDate.toISOString(),
-            timeZone: 'Europe/London'
-          }
-          
-          console.log(`📅 Creating Google Calendar exception for original time: ${exception.exceptionDate.toISOString()}`)
-          
-          // Create exception event that will automatically cancel the original instance
+
+          console.log(`📅 Creating standalone exception event for: ${exception.exceptionDate.toISOString()}`)
+
           const response = await googleCalendarRateLimiter.executeWithRetry(
             () => calendar.events.insert({
               calendarId: process.env.GOOGLE_CALENDAR_ID!,
@@ -221,6 +240,7 @@ export async function syncOnce(): Promise<SyncResult> {
                 uid,
                 googleEventId: response.data.id,
                 fingerprint,
+                isException: true,
                 originalUid,
                 exceptionDate: exception.exceptionDate
               }
